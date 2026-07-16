@@ -66,7 +66,7 @@
     <button id="searchBtn" aria-label="검색">🔍</button>
   </div>
   <div id="opts">
-    <label id="near"><input type="checkbox" id="nearChk" /> 내 주변만</label>
+    <label id="near"><input type="checkbox" id="nearChk" /> 현재 지도에서만</label>
     <div id="chips"></div>
   </div>
   <div id="map">
@@ -166,19 +166,27 @@
       ps.categorySearch('CE7', done, { useMapBounds:true });
     }
 
-    // 키워드 검색(이름/지역). nearOnly 면 현재 위치 반경으로 제한.
+    // 키워드 검색(이름/지역).
+    // nearOnly ON = 현재 지도에 보이는 영역(위치+확대범위) 그대로 안에서만 검색 + 뷰 유지.
+    // nearOnly OFF = 전역 검색(이름으로 어디서든) 후 결과에 맞춰 지도 이동.
     function doSearch(q){
-      keywordMode=true;
-      var opt = nearOnly ? { location:new kakao.maps.LatLng(myLat,myLng), radius:10000, sort:'distance' } : {};
-      ps.keywordSearch(q, function(data,st){
-        if(st!==kakao.maps.services.Status.OK || !data.length){ raw=[]; render(); return; }
-        raw = data;
-        // 결과들이 보이도록 지도 범위 맞춤
-        var bounds=new kakao.maps.LatLngBounds();
-        data.forEach(function(d){ bounds.extend(new kakao.maps.LatLng(Number(d.y),Number(d.x))); });
-        map.setBounds(bounds);
-        render();
-      }, opt);
+      if(nearOnly){
+        keywordMode=false; // 뷰 안 바꿈
+        ps.keywordSearch(q, function(data,st){
+          raw = (st===kakao.maps.services.Status.OK && data.length) ? data : [];
+          render(); // 현재 지도 위치·줌 그대로 유지
+        }, { bounds: map.getBounds() });
+      } else {
+        keywordMode=true; // 아래 setBounds 로 인한 nearby 덮어쓰기 방지
+        ps.keywordSearch(q, function(data,st){
+          if(st!==kakao.maps.services.Status.OK || !data.length){ raw=[]; render(); keywordMode=false; return; }
+          raw = data;
+          var bounds=new kakao.maps.LatLngBounds();
+          data.forEach(function(d){ bounds.extend(new kakao.maps.LatLng(Number(d.y),Number(d.x))); });
+          map.setBounds(bounds);
+          render();
+        }, {});
+      }
     }
 
     kakao.maps.event.addListener(map,'idle',function(){
