@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>맛집 룰렛 지도</title>
+<!--
+  맛집 룰렛 "지도에서 찾기" 페이지.
+  ⚠️ 이 파일은 앱 안이 아니라 실제 https 도메인(예: jgseo77.github.io)에 올려서
+     iframe 으로 앱에 띄운다. 카카오 지도 SDK 는 등록된 http/https 도메인에서만
+     동작하므로(앱의 capacitor:// origin 에선 불가), 이 페이지의 origin(github.io)을
+     카카오 [JavaScript 키 > JavaScript SDK 도메인] 에 등록해야 한다.
+  앱(부모)과는 postMessage 로 통신: 부모→검색어/찜목록, 자식→선택한 장소(찜 추가).
+-->
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body, #map { width: 100%; height: 100%; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; overflow: hidden; }
+  #map { background: #e8e6df; }
+  .iw { padding: 6px 8px 10px; min-width: 160px; }
+  .iw-name { font-weight: 700; font-size: 14px; color: #222; }
+  .iw-addr { font-size: 11px; color: #888; margin: 3px 0 8px; }
+  .iw-btn { width: 100%; border: 0; border-radius: 8px; padding: 8px; color: #fff; font-weight: 700; font-size: 13px; background: linear-gradient(135deg, #ff7a45, #ff4d6d); }
+  .iw-btn:disabled { opacity: .55; }
+  #ov { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; font-size: 14px; color: #888; background: #faf6ef; z-index: 5; }
+  #ov.err { color: #e15554; }
+  #ov.hidden { display: none; }
+</style>
+</head>
+<body>
+<div id="map"></div>
+<div id="ov">🗺️ 지도를 불러오는 중…</div>
+<script src="https://dapi.kakao.com/v2/maps/sdk.js?appkey=0427fea6b14476514b175c6cb2228d80&autoload=false&libraries=services"></script>
+<script>
+(function () {
+  var ov = document.getElementById('ov');
+  function fail(msg) { ov.textContent = msg || '지도를 불러오지 못했어요.'; ov.className = 'err'; }
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
+  function post(msg) { try { parent.postMessage(Object.assign({ ns: 'fr-map' }, msg), '*'); } catch (e) {} }
+  function qs(k) { return new URLSearchParams(location.search).get(k); }
+
+  var lat = parseFloat(qs('lat')); if (!isFinite(lat)) lat = 37.5665;
+  var lng = parseFloat(qs('lng')); if (!isFinite(lng)) lng = 126.9780;
+
+  var ready = false;
+  var failTimer = setTimeout(function () { if (!ready) fail('지도를 불러오지 못했어요.\n(도메인 등록/네트워크 확인)'); }, 12000);
+
+  if (!window.kakao || !window.kakao.maps) { clearTimeout(failTimer); fail('지도 SDK 로드 실패 (JS 키/도메인 확인)'); return; }
+
+  kakao.maps.load(function () {
+    ready = true; clearTimeout(failTimer); ov.className = 'hidden';
+
+    var map = new kakao.maps.Map(document.getElementById('map'), { center: new kakao.maps.LatLng(lat, lng), level: 4 });
+    var ps = new kakao.maps.services.Places();
+    var iw = new kakao.maps.InfoWindow({ removable: true, zIndex: 3 });
+    var markers = [];
+    var favIds = {};
+
+    new kakao.maps.Circle({ center: new kakao.maps.LatLng(lat, lng), radius: 30, strokeWeight: 0, fillColor: '#4D9DE0', fillOpacity: 0.9 }).setMap(map);
+
+    function clearMarkers() { markers.forEach(function (m) { m.setMap(null); }); markers = []; }
+
+    function openInfo(marker, d) {
+      var box = document.createElement('div'); box.className = 'iw';
+      box.innerHTML = '<div class="iw-name">' + esc(d.place_name) + '</div>' +
+                      '<div class="iw-addr">' + esc(d.road_address_name || d.address_name || '') + '</div>';
+      var btn = document.createElement('button'); btn.className = 'iw-btn';
+      var already = !!favIds[d.id];
+      btn.textContent = already ? '✓ 찜됨' : '⭐ 찜에 추가'; btn.disabled = already;
+      btn.onclick = function () {
+        favIds[d.id] = true; btn.textContent = '✓ 찜됨'; btn.disabled = true;
+        post({ action: 'add', place: {
+          id: d.id, name: d.place_name, x: d.x, y: d.y,
+          category_name: d.category_name, category_group_code: d.category_group_code,
+          place_url: d.place_url, road_address_name: d.road_address_name, address_name: d.address_name, phone: d.phone
+        } });
+      };
+      box.appendChild(btn); iw.setContent(box); iw.open(map, marker);
+    }
+
+    function render(list) {
+      clearMarkers();
+      list.forEach(function (d) {
+        var m = new kakao.maps.Marker({ position: new kakao.maps.LatLng(Number(d.y), Number(d.x)), map: map });
+        kakao.maps.event.addListener(m, 'click', function () { openInfo(m, d); });
+        markers.push(m);
+      });
+    }
+
+    function searchNearby() {
+      ps.categorySearch('FD6', function (data, st) {
+        if (st === kakao.maps.services.Status.OK) render(data);
+      }, { useMapBounds: true });
+    }
+
+    kakao.maps.event.addListener(map, 'idle', searchNearby);
+    searchNearby();
+
+    // 부모(앱)로부터 메시지 수신
+    window.addEventListener('message', function (e) {
+      var d = e.data || {};
+      if (d.ns !== 'fr-app') return;
+      if (d.action === 'favs' && Array.isArray(d.ids)) { d.ids.forEach(function (id) { favIds[id] = true; }); }
+      else if (d.action === 'search' && d.query) {
+        ps.keywordSearch(d.query, function (data, st) {
+          if (st === kakao.maps.services.Status.OK && data.length) {
+            map.setCenter(new kakao.maps.LatLng(Number(data[0].y), Number(data[0].x)));
+            render(data);
+          }
+        });
+      } else if (d.action === 'center' && isFinite(d.lat) && isFinite(d.lng)) {
+        map.setCenter(new kakao.maps.LatLng(d.lat, d.lng));
+      }
+    });
+
+    post({ action: 'ready' });
+  });
+})();
+</script>
+</body>
+</html>
