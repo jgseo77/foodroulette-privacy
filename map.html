@@ -137,7 +137,13 @@
     var chipsEl = document.getElementById('chips');
     CATS.forEach(function(c){
       var b=document.createElement('button'); b.className='chip'+(c.id==='전체'?' active':''); b.textContent=c.emoji+' '+c.id; b.dataset.cat=c.id;
-      b.onclick=function(){ selCat=c.id; [].forEach.call(chipsEl.children,function(x){x.classList.toggle('active', x.dataset.cat===selCat);}); render(); };
+      b.onclick=function(){
+        selCat=c.id;
+        [].forEach.call(chipsEl.children,function(x){x.classList.toggle('active', x.dataset.cat===selCat);});
+        render(); // 기존 결과 즉시 재필터(즉각 반응)
+        // 검색어 없으면 현재 지도 영역을 이 카테고리로 신선하게 재조회(가까운 15개 한계 보완)
+        if(!document.getElementById('search').value.trim()) refresh();
+      };
       chipsEl.appendChild(b);
     });
 
@@ -157,13 +163,28 @@
       });
     }
 
-    // 주변(지도 영역) 식당+카페 검색
-    function fetchNearby(){
-      var acc=[], pending=2;
-      function done(data,st){ if(st===kakao.maps.services.Status.OK) acc=acc.concat(data); if(--pending===0){ dedupe(acc); } }
-      function dedupe(arr){ var seen={},out=[]; arr.forEach(function(d){ if(!seen[d.id]){seen[d.id]=1; out.push(d);} }); raw=out; render(); }
-      ps.categorySearch('FD6', done, { useMapBounds:true });
-      ps.categorySearch('CE7', done, { useMapBounds:true });
+    // 카테고리별 그룹코드: 카페=CE7, 전체=FD6+CE7, 그 외=FD6(→ render 에서 classify 로 정밀 필터)
+    function codesFor(cat){ return cat==='카페' ? ['CE7'] : (cat==='전체' ? ['FD6','CE7'] : ['FD6']); }
+    // 한 그룹코드를 현재 지도 영역에서 최대 3페이지(45개)까지 모음(가까운 15개 한계 보완)
+    function fetchCat(code, cb){
+      var acc=[], page=0;
+      ps.categorySearch(code, function on(data, st, pg){
+        if(st===kakao.maps.services.Status.OK && data && data.length) acc=acc.concat(data);
+        page++;
+        if(st===kakao.maps.services.Status.OK && pg && pg.hasNextPage && page<3){ pg.nextPage(); }
+        else cb(acc);
+      }, { useMapBounds:true });
+    }
+    // 현재 지도 영역을 선택 카테고리로 재조회 → raw 갱신 → render
+    function refresh(){
+      var codes=codesFor(selCat), acc=[], pending=codes.length;
+      if(!pending){ raw=[]; render(); return; }
+      codes.forEach(function(code){
+        fetchCat(code, function(list){
+          acc=acc.concat(list);
+          if(--pending===0){ var seen={},out=[]; acc.forEach(function(d){ if(!seen[d.id]){seen[d.id]=1; out.push(d);} }); raw=out; render(); }
+        });
+      });
     }
 
     // 키워드 검색(이름/지역).
@@ -191,9 +212,9 @@
 
     kakao.maps.event.addListener(map,'idle',function(){
       if(keywordMode){ keywordMode=false; return; } // 검색 결과 유지(첫 idle 무시)
-      fetchNearby();
+      refresh();
     });
-    fetchNearby();
+    refresh();
 
     // 검색 입력
     var searchEl=document.getElementById('search'), t=null;
