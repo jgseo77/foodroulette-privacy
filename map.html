@@ -15,7 +15,14 @@
   input { -webkit-user-select:text; user-select:text; } /* 검색 입력만 편집 허용 */
   :root { --bg:#faf6ef; --ink:#2b2b2b; --muted:#8a8a8a; --line:#e7e2d8; --accent:#ff7a45; --accent2:#ff4d6d; }
   html,body { width:100%; height:100%; font-family:-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",sans-serif; background:var(--bg); color:var(--ink); overflow:hidden; }
-  #wrap { display:flex; flex-direction:column; width:100%; height:100%; }
+  #wrap { display:flex; flex-direction:column; width:100%; height:100%; position:relative; }
+
+  /* 최근 검색어 드롭다운 */
+  #recent { position:absolute; left:10px; right:10px; top:54px; background:#fff; border:1px solid var(--line); border-radius:12px; box-shadow:0 6px 20px rgba(0,0,0,.14); z-index:25; overflow:hidden; display:none; }
+  .recent-row { display:flex; align-items:center; border-top:1px solid #f1eee7; }
+  .recent-row:first-child { border-top:0; }
+  .recent-q { flex:1; padding:12px 14px; font-size:14px; color:var(--ink); }
+  .recent-x { flex:0 0 auto; border:0; background:transparent; color:#c2c2c2; font-size:14px; padding:12px 14px; }
 
   /* 상단 검색바 */
   #top { display:flex; align-items:center; gap:8px; padding:8px 10px; background:var(--bg); }
@@ -67,13 +74,14 @@
     <input id="search" type="text" placeholder="식당·지역 검색 (예: 강남역, 스타벅스)" enterkeyhint="search" autocomplete="off" />
     <button id="searchBtn" aria-label="검색">🔍</button>
   </div>
+  <div id="recent"></div>
   <div id="opts">
     <label id="near"><input type="checkbox" id="nearChk" /> 현재 지도에서만</label>
     <div id="chips"></div>
   </div>
   <div id="map">
     <button id="loc" aria-label="현재 위치로">◎</button>
-    <div id="ver">v6</div>
+    <div id="ver">v7</div>
     <div id="ov">🗺️ 지도를 불러오는 중…</div>
   </div>
 </div>
@@ -134,6 +142,7 @@
     var raw = [];          // 마지막으로 가져온 원본 결과(필터 전)
     var keywordMode = false;
     var curQuery = '';     // 적용된 검색어(버튼/엔터로만 설정). '' = 카테고리 브라우즈
+    var pendingLocSearch = false; // '현재 위치로' 이동 후 정확한 bounds 로 재검색 대기
 
     new kakao.maps.Circle({ center:new kakao.maps.LatLng(myLat,myLng), radius:35, strokeWeight:0, fillColor:'#4D9DE0', fillOpacity:.85 }).setMap(map);
 
@@ -210,32 +219,62 @@
     function applySearch(){
       curQuery = searchEl.value.trim();
       if(!curQuery){ refresh(); return; } // 빈 검색 = 카테고리 브라우즈로
+      addRecent(curQuery);
       doQuery(curQuery, true);
+    }
+    // 현재 지도 영역에서 검색어로 재검색(뷰 유지)
+    function searchInBounds(q){
+      ps.keywordSearch(q, function(data,st){ raw=(st===kakao.maps.services.Status.OK && data.length)?data:[]; render(); }, { bounds: map.getBounds() });
     }
 
     // 지도 이동(확대/축소/팬): 검색어 있으면 그 검색어로 현재 영역 재검색, 없으면 카테고리 브라우즈
     kakao.maps.event.addListener(map,'idle',function(){
       if(keywordMode){ keywordMode=false; return; }
-      if(curQuery && nearOnly) doQuery(curQuery, false); // 검색어+현재영역: 이동 시 필터+검색어로 재검색
-      else if(!curQuery) refresh();                       // 검색어 없음: 카테고리 브라우즈
+      if(pendingLocSearch){ pendingLocSearch=false; if(curQuery) searchInBounds(curQuery); else refresh(); return; } // 현재위치로 이동 완료 → 재검색
+      if(curQuery && nearOnly) searchInBounds(curQuery); // 검색어+현재영역: 이동 시 필터+검색어로 재검색
+      else if(!curQuery) refresh();                      // 검색어 없음: 카테고리 브라우즈
       // 검색어+전역(nearOnly off): 재검색 안 하고 결과 유지
     });
     refresh();
 
     // 검색 입력 — 버튼/엔터로만 검색(입력 중엔 아무것도 안 함). 입력 지우면 브라우즈로 복귀.
     var searchEl=document.getElementById('search');
-    searchEl.addEventListener('input',function(){ if(!searchEl.value.trim() && curQuery){ curQuery=''; refresh(); } });
-    searchEl.addEventListener('keydown',function(e){ if(e.key==='Enter'){ applySearch(); searchEl.blur(); } });
-    document.getElementById('searchBtn').onclick=function(){ applySearch(); searchEl.blur(); };
 
-    // 현재 위치로 — 검색어는 유지, 내 위치로 이동해서 그 검색어(있으면)로 현재 영역 재검색
+    // 최근 검색어(이 페이지 origin=hyperspeedgames.com 의 localStorage)
+    var RECENT_KEY='fr-map-recent', recentEl=document.getElementById('recent');
+    function getRecent(){ try{ return JSON.parse(localStorage.getItem(RECENT_KEY)||'[]'); }catch(e){ return []; } }
+    function saveRecent(r){ try{ localStorage.setItem(RECENT_KEY, JSON.stringify(r)); }catch(e){} }
+    function addRecent(q){ q=(q||'').trim(); if(!q) return; var r=getRecent().filter(function(x){return x!==q;}); r.unshift(q); saveRecent(r.slice(0,8)); }
+    function delRecent(q){ saveRecent(getRecent().filter(function(x){return x!==q;})); }
+    function hideRecent(){ recentEl.style.display='none'; }
+    function showRecent(){
+      var r=getRecent();
+      if(!r.length || searchEl.value.trim()){ hideRecent(); return; }
+      recentEl.innerHTML='';
+      r.forEach(function(q){
+        var row=document.createElement('div'); row.className='recent-row';
+        var t=document.createElement('span'); t.className='recent-q'; t.textContent='🕘 '+q;
+        t.onclick=function(){ searchEl.value=q; hideRecent(); applySearch(); searchEl.blur(); };
+        var x=document.createElement('button'); x.type='button'; x.className='recent-x'; x.textContent='✕';
+        x.onclick=function(e){ e.stopPropagation(); delRecent(q); showRecent(); };
+        row.appendChild(t); row.appendChild(x); recentEl.appendChild(row);
+      });
+      recentEl.style.display='block';
+    }
+
+    searchEl.addEventListener('input',function(){ if(!searchEl.value.trim()){ if(curQuery){ curQuery=''; refresh(); } showRecent(); } else hideRecent(); });
+    searchEl.addEventListener('keydown',function(e){ if(e.key==='Enter'){ hideRecent(); applySearch(); searchEl.blur(); } });
+    searchEl.addEventListener('focus', showRecent);
+    searchEl.addEventListener('blur', function(){ setTimeout(hideRecent, 200); }); // 항목 탭 처리 여유
+    document.getElementById('searchBtn').onclick=function(){ hideRecent(); applySearch(); searchEl.blur(); };
+
+    // 현재 위치로 — 검색어는 유지, 내 위치로 이동한 뒤(idle=정확한 bounds) 그 검색어로 재검색
     document.getElementById('loc').onclick=function(){
+      pendingLocSearch=true; // 이동 완료(idle) 시점에 재검색(setCenter 직후 getBounds 는 옛 영역이라)
       map.setLevel(4);
-      map.setCenter(new kakao.maps.LatLng(myLat,myLng)); // 즉시 이동(getBounds 반영)
-      keywordMode=true; // 이 이동으로 인한 idle 은 스킵(아래서 직접 처리)
-      if(curQuery){
-        ps.keywordSearch(curQuery, function(data,st){ raw=(st===kakao.maps.services.Status.OK && data.length)?data:[]; render(); }, { bounds: map.getBounds() });
-      } else refresh();
+      map.setCenter(new kakao.maps.LatLng(myLat,myLng));
+      // 안전망: idle 이 안 오면(이미 그 위치) 잠시 뒤 직접
+      setTimeout(function(){ if(pendingLocSearch){ pendingLocSearch=false; if(curQuery) searchInBounds(curQuery); else refresh(); } }, 450);
     };
 
     // ── 상세 바텀시트 ──
