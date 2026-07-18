@@ -73,7 +73,7 @@
   </div>
   <div id="map">
     <button id="loc" aria-label="현재 위치로">◎</button>
-    <div id="ver">v5</div>
+    <div id="ver">v6</div>
     <div id="ov">🗺️ 지도를 불러오는 중…</div>
   </div>
 </div>
@@ -228,8 +228,15 @@
     searchEl.addEventListener('keydown',function(e){ if(e.key==='Enter'){ applySearch(); searchEl.blur(); } });
     document.getElementById('searchBtn').onclick=function(){ applySearch(); searchEl.blur(); };
 
-    // 현재 위치로 — 검색 해제하고 내 위치 주변 브라우즈
-    document.getElementById('loc').onclick=function(){ keywordMode=false; curQuery=''; searchEl.value=''; map.setLevel(4); map.panTo(new kakao.maps.LatLng(myLat,myLng)); };
+    // 현재 위치로 — 검색어는 유지, 내 위치로 이동해서 그 검색어(있으면)로 현재 영역 재검색
+    document.getElementById('loc').onclick=function(){
+      map.setLevel(4);
+      map.setCenter(new kakao.maps.LatLng(myLat,myLng)); // 즉시 이동(getBounds 반영)
+      keywordMode=true; // 이 이동으로 인한 idle 은 스킵(아래서 직접 처리)
+      if(curQuery){
+        ps.keywordSearch(curQuery, function(data,st){ raw=(st===kakao.maps.services.Status.OK && data.length)?data:[]; render(); }, { bounds: map.getBounds() });
+      } else refresh();
+    };
 
     // ── 상세 바텀시트 ──
     var sheet=document.getElementById('sheet'), sheetBg=document.getElementById('sheetBg'), sheetBody=document.getElementById('sheetBody');
