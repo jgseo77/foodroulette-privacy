@@ -81,7 +81,7 @@
   </div>
   <div id="map">
     <button id="loc" aria-label="현재 위치로">◎</button>
-    <div id="ver">v7</div>
+    <div id="ver">v8</div>
     <div id="ov">🗺️ 지도를 불러오는 중…</div>
   </div>
 </div>
@@ -142,7 +142,6 @@
     var raw = [];          // 마지막으로 가져온 원본 결과(필터 전)
     var keywordMode = false;
     var curQuery = '';     // 적용된 검색어(버튼/엔터로만 설정). '' = 카테고리 브라우즈
-    var pendingLocSearch = false; // '현재 위치로' 이동 후 정확한 bounds 로 재검색 대기
 
     new kakao.maps.Circle({ center:new kakao.maps.LatLng(myLat,myLng), radius:35, strokeWeight:0, fillColor:'#4D9DE0', fillOpacity:.85 }).setMap(map);
 
@@ -230,7 +229,6 @@
     // 지도 이동(확대/축소/팬): 검색어 있으면 그 검색어로 현재 영역 재검색, 없으면 카테고리 브라우즈
     kakao.maps.event.addListener(map,'idle',function(){
       if(keywordMode){ keywordMode=false; return; }
-      if(pendingLocSearch){ pendingLocSearch=false; if(curQuery) searchInBounds(curQuery); else refresh(); return; } // 현재위치로 이동 완료 → 재검색
       if(curQuery && nearOnly) searchInBounds(curQuery); // 검색어+현재영역: 이동 시 필터+검색어로 재검색
       else if(!curQuery) refresh();                      // 검색어 없음: 카테고리 브라우즈
       // 검색어+전역(nearOnly off): 재검색 안 하고 결과 유지
@@ -248,8 +246,11 @@
     function delRecent(q){ saveRecent(getRecent().filter(function(x){return x!==q;})); }
     function hideRecent(){ recentEl.style.display='none'; }
     function showRecent(){
-      var r=getRecent();
-      if(!r.length || searchEl.value.trim()){ hideRecent(); return; }
+      var all=getRecent();
+      var typed=searchEl.value.trim().toLowerCase();
+      // 입력 중이면 매칭되는 것만, 비었으면 전체
+      var r = typed ? all.filter(function(x){ var lx=x.toLowerCase(); return lx.indexOf(typed)>=0 && lx!==typed; }) : all;
+      if(!r.length){ hideRecent(); return; }
       recentEl.innerHTML='';
       r.forEach(function(q){
         var row=document.createElement('div'); row.className='recent-row';
@@ -262,19 +263,23 @@
       recentEl.style.display='block';
     }
 
-    searchEl.addEventListener('input',function(){ if(!searchEl.value.trim()){ if(curQuery){ curQuery=''; refresh(); } showRecent(); } else hideRecent(); });
+    searchEl.addEventListener('input',function(){ if(!searchEl.value.trim() && curQuery){ curQuery=''; refresh(); } showRecent(); });
     searchEl.addEventListener('keydown',function(e){ if(e.key==='Enter'){ hideRecent(); applySearch(); searchEl.blur(); } });
     searchEl.addEventListener('focus', showRecent);
     searchEl.addEventListener('blur', function(){ setTimeout(hideRecent, 200); }); // 항목 탭 처리 여유
     document.getElementById('searchBtn').onclick=function(){ hideRecent(); applySearch(); searchEl.blur(); };
 
-    // 현재 위치로 — 검색어는 유지, 내 위치로 이동한 뒤(idle=정확한 bounds) 그 검색어로 재검색
+    // 현재 위치로 — 내 위치로 이동. 검색어 있으면 내 좌표 기준(location+radius)으로 재검색
+    // (프로그램적 setCenter 후 getBounds 가 늦게 갱신돼 bounds 검색이 옛 영역을 잡는 문제 회피)
     document.getElementById('loc').onclick=function(){
-      pendingLocSearch=true; // 이동 완료(idle) 시점에 재검색(setCenter 직후 getBounds 는 옛 영역이라)
+      var here=new kakao.maps.LatLng(myLat,myLng);
       map.setLevel(4);
-      map.setCenter(new kakao.maps.LatLng(myLat,myLng));
-      // 안전망: idle 이 안 오면(이미 그 위치) 잠시 뒤 직접
-      setTimeout(function(){ if(pendingLocSearch){ pendingLocSearch=false; if(curQuery) searchInBounds(curQuery); else refresh(); } }, 450);
+      map.setCenter(here);
+      if(curQuery){
+        keywordMode=true; // 이동으로 인한 idle 은 스킵(여기서 위치기반으로 직접 검색)
+        ps.keywordSearch(curQuery, function(data,st){ raw=(st===kakao.maps.services.Status.OK && data.length)?data:[]; render(); }, { location:here, radius:5000, sort:'distance' });
+      }
+      // 검색어 없으면 keywordMode 안 건드림 → 이동 후 idle 이 refresh(정확 bounds) 처리
     };
 
     // ── 상세 바텀시트 ──
