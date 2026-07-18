@@ -73,7 +73,7 @@
   </div>
   <div id="map">
     <button id="loc" aria-label="현재 위치로">◎</button>
-    <div id="ver">v4</div>
+    <div id="ver">v5</div>
     <div id="ov">🗺️ 지도를 불러오는 중…</div>
   </div>
 </div>
@@ -133,6 +133,7 @@
     var nearOnly = false;
     var raw = [];          // 마지막으로 가져온 원본 결과(필터 전)
     var keywordMode = false;
+    var curQuery = '';     // 적용된 검색어(버튼/엔터로만 설정). '' = 카테고리 브라우즈
 
     new kakao.maps.Circle({ center:new kakao.maps.LatLng(myLat,myLng), radius:35, strokeWeight:0, fillColor:'#4D9DE0', fillOpacity:.85 }).setMap(map);
 
@@ -144,15 +145,15 @@
         selCat=c.id;
         [].forEach.call(chipsEl.children,function(x){x.classList.toggle('active', x.dataset.cat===selCat);});
         render(); // 기존 결과 즉시 재필터(즉각 반응)
-        // 검색어 없으면 현재 지도 영역을 이 카테고리로 신선하게 재조회(가까운 15개 한계 보완)
-        if(!document.getElementById('search').value.trim()) refresh();
+        // 검색어 없으면 현재 지도 영역을 이 카테고리로 재조회. 검색어 있으면 render 로 검색결과 재필터(필터+검색어)
+        if(!curQuery) refresh();
       };
       chipsEl.appendChild(b);
     });
 
     // 내 주변만 토글
     var nearLabel=document.getElementById('near'), nearChk=document.getElementById('nearChk');
-    nearChk.onchange=function(){ nearOnly=nearChk.checked; nearLabel.classList.toggle('on', nearOnly); var q=document.getElementById('search').value.trim(); if(q.length>=1) doSearch(q); };
+    nearChk.onchange=function(){ nearOnly=nearChk.checked; nearLabel.classList.toggle('on', nearOnly); if(curQuery) doQuery(curQuery, true); };
 
     function clearMarkers(){ markers.forEach(function(m){ m.setMap(null); }); markers=[]; }
 
@@ -191,44 +192,44 @@
       });
     }
 
-    // 키워드 검색(이름/지역).
-    // nearOnly ON = 현재 지도에 보이는 영역(위치+확대범위) 그대로 안에서만 검색 + 뷰 유지.
-    // nearOnly OFF = 전역 검색(이름으로 어디서든) 후 결과에 맞춰 지도 이동.
-    function doSearch(q){
-      if(nearOnly){
-        keywordMode=false; // 뷰 안 바꿈
-        ps.keywordSearch(q, function(data,st){
-          raw = (st===kakao.maps.services.Status.OK && data.length) ? data : [];
-          render(); // 현재 지도 위치·줌 그대로 유지
-        }, { bounds: map.getBounds() });
-      } else {
-        keywordMode=true; // 아래 setBounds 로 인한 nearby 덮어쓰기 방지
-        ps.keywordSearch(q, function(data,st){
-          if(st!==kakao.maps.services.Status.OK || !data.length){ raw=[]; render(); keywordMode=false; return; }
-          raw = data;
-          var bounds=new kakao.maps.LatLngBounds();
-          data.forEach(function(d){ bounds.extend(new kakao.maps.LatLng(Number(d.y),Number(d.x))); });
-          map.setBounds(bounds);
-          render();
-        }, {});
-      }
+    // 검색 실행 — 버튼/엔터로만(입력 중 자동검색 안 함). q=검색어, moveIfGlobal=전역검색 시 결과로 이동.
+    // nearOnly ON = 현재 지도 영역 안에서 검색 + 뷰 유지 / OFF = 전역 검색 후 결과로 이동.
+    function doQuery(q, moveIfGlobal){
+      var opt = nearOnly ? { bounds: map.getBounds() } : {};
+      ps.keywordSearch(q, function(data,st){
+        raw = (st===kakao.maps.services.Status.OK && data.length) ? data : [];
+        if(!nearOnly && moveIfGlobal && raw.length){
+          keywordMode = true; // 아래 setBounds 로 인한 idle 은 스킵(재검색 방지)
+          var b=new kakao.maps.LatLngBounds();
+          raw.forEach(function(d){ b.extend(new kakao.maps.LatLng(Number(d.y),Number(d.x))); });
+          map.setBounds(b);
+        }
+        render(); // 카테고리 필터(selCat)도 함께 적용 → 필터+검색어
+      }, opt);
+    }
+    function applySearch(){
+      curQuery = searchEl.value.trim();
+      if(!curQuery){ refresh(); return; } // 빈 검색 = 카테고리 브라우즈로
+      doQuery(curQuery, true);
     }
 
+    // 지도 이동(확대/축소/팬): 검색어 있으면 그 검색어로 현재 영역 재검색, 없으면 카테고리 브라우즈
     kakao.maps.event.addListener(map,'idle',function(){
-      if(keywordMode){ keywordMode=false; return; } // 검색 결과 유지(첫 idle 무시)
-      refresh();
+      if(keywordMode){ keywordMode=false; return; }
+      if(curQuery && nearOnly) doQuery(curQuery, false); // 검색어+현재영역: 이동 시 필터+검색어로 재검색
+      else if(!curQuery) refresh();                       // 검색어 없음: 카테고리 브라우즈
+      // 검색어+전역(nearOnly off): 재검색 안 하고 결과 유지
     });
     refresh();
 
-    // 검색 입력
-    var searchEl=document.getElementById('search'), t=null;
-    function triggerSearch(){ var q=searchEl.value.trim(); if(q.length>=1) doSearch(q); }
-    searchEl.addEventListener('input',function(){ clearTimeout(t); t=setTimeout(triggerSearch,450); });
-    searchEl.addEventListener('keydown',function(e){ if(e.key==='Enter'){ clearTimeout(t); triggerSearch(); searchEl.blur(); } });
-    document.getElementById('searchBtn').onclick=function(){ clearTimeout(t); triggerSearch(); searchEl.blur(); };
+    // 검색 입력 — 버튼/엔터로만 검색(입력 중엔 아무것도 안 함). 입력 지우면 브라우즈로 복귀.
+    var searchEl=document.getElementById('search');
+    searchEl.addEventListener('input',function(){ if(!searchEl.value.trim() && curQuery){ curQuery=''; refresh(); } });
+    searchEl.addEventListener('keydown',function(e){ if(e.key==='Enter'){ applySearch(); searchEl.blur(); } });
+    document.getElementById('searchBtn').onclick=function(){ applySearch(); searchEl.blur(); };
 
-    // 현재 위치로
-    document.getElementById('loc').onclick=function(){ keywordMode=false; map.setLevel(4); map.panTo(new kakao.maps.LatLng(myLat,myLng)); };
+    // 현재 위치로 — 검색 해제하고 내 위치 주변 브라우즈
+    document.getElementById('loc').onclick=function(){ keywordMode=false; curQuery=''; searchEl.value=''; map.setLevel(4); map.panTo(new kakao.maps.LatLng(myLat,myLng)); };
 
     // ── 상세 바텀시트 ──
     var sheet=document.getElementById('sheet'), sheetBg=document.getElementById('sheetBg'), sheetBody=document.getElementById('sheetBody');
@@ -264,7 +265,7 @@
     window.addEventListener('message', function(e){
       var d=e.data||{}; if(d.ns!=='fr-app') return;
       if(d.action==='favs' && Array.isArray(d.ids)){ favIds={}; d.ids.forEach(function(id){ favIds[id]=1; }); render(); }
-      else if(d.action==='search' && d.query){ document.getElementById('search').value=d.query; doSearch(d.query); }
+      else if(d.action==='search' && d.query){ searchEl.value=d.query; curQuery=d.query; doQuery(d.query, true); }
       else if(d.action==='center' && isFinite(d.lat) && isFinite(d.lng)){ myLat=d.lat; myLng=d.lng; map.panTo(new kakao.maps.LatLng(d.lat,d.lng)); }
     });
 
